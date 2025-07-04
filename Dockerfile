@@ -36,6 +36,8 @@ RUN mkdir -p /app/chroma_db /app/backups
 COPY src/ /app/src/
 COPY uv_wrapper.py memory_wrapper_uv.py ./
 
+RUN uv sync
+
 # Install the package with UV
 RUN python -m uv pip install -e .
 
