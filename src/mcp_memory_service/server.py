@@ -1355,15 +1355,15 @@ class MemoryServer:
             storage = await self._ensure_storage_initialized()
             
             # Normalize tags to a list
-            tags = metadata.get("tags", "")
+            tags = metadata.get("tags", [])
             if isinstance(tags, str):
                 tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+            elif isinstance(tags, list):
+                tags = [str(tag).strip() for tag in tags if str(tag).strip()]
             else:
-                tags = []  # If tags is not a string, default to empty list to be consistent with the Memory Model
-
-            sanitized_tags = storage.sanitized(tags)
+                tags = []  # If tags is not a string or list, default to empty list
             
-            # Create memory object
+            # Create memory object - let the storage layer handle metadata optimization
             content_hash = generate_content_hash(content, metadata)
             now = time.time()
             memory = Memory(
@@ -1371,7 +1371,7 @@ class MemoryServer:
                 content_hash=content_hash,
                 tags=tags,  # keep as a list for easier use in other methods
                 memory_type=metadata.get("type"),
-                metadata = {**metadata, "tags":sanitized_tags},  # include the stringified tags in the meta data
+                metadata=metadata,  # pass original metadata, storage layer will optimize
                 created_at=now,
                 created_at_iso=datetime.utcfromtimestamp(now).isoformat() + "Z"
             )
@@ -1429,6 +1429,9 @@ class MemoryServer:
     async def handle_search_by_tag(self, arguments: dict) -> List[types.TextContent]:
         tags = arguments.get("tags", [])
         
+        logger.info(f"handle_search_by_tag called with arguments: {arguments}")
+        logger.info(f"Received tags: {tags} (type: {type(tags)})")
+        
         if not tags:
             return [types.TextContent(type="text", text="Error: Tags are required")]
         
@@ -1436,7 +1439,12 @@ class MemoryServer:
             # Initialize storage lazily when needed
             storage = await self._ensure_storage_initialized()
             
+            # Additional logging for debugging
+            logger.info(f"Storage initialized successfully, calling search_by_tag with tags: {tags}")
+            
             memories = await storage.search_by_tag(tags)
+            
+            logger.info(f"search_by_tag returned {len(memories)} memories")
             
             if not memories:
                 return [types.TextContent(

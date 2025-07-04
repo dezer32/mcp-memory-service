@@ -488,47 +488,107 @@ class ChromaMemoryStorage(MemoryStorage):
 
 
     async def search_by_tag(self, tags: List[str]) -> List[Memory]:
-        """Search memories by tags with optimized performance.
+        """Search memories by tags with enhanced debugging and performance.
         Handles both new comma-separated and old JSON array tag formats."""
         try:
-            results = self.collection.get(
-                include=["metadatas", "documents"]
-            )
+            # Input validation and logging
+            if not tags:
+                logger.warning("search_by_tag called with empty tags list")
+                return []
+            
+            # Handle case where tags might be passed as a string instead of list
+            if isinstance(tags, str):
+                logger.info(f"Converting string tags to list: '{tags}'")
+                tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
+            
+            # Normalize search tags once
+            search_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+            if not search_tags:
+                logger.warning("search_by_tag: all tags were empty after normalization")
+                return []
+            
+            logger.info(f"Searching for memories with tags: {search_tags}")
+            
+            # Check if collection is initialized
+            if self.collection is None:
+                logger.error("Collection not initialized, cannot search by tags")
+                return []
+            
+            # Additional check for collection validity
+            try:
+                # Try to get count first to verify collection is accessible
+                count = self.collection.count()
+                logger.info(f"Collection contains {count} documents")
+                if count == 0:
+                    logger.warning("Collection is empty - no memories to search")
+                    return []
+            except Exception as count_error:
+                logger.error(f"Error accessing collection: {str(count_error)}")
+                return []
+            
+            # Get all documents from ChromaDB with better error handling
+            try:
+                results = self.collection.get(
+                    include=["metadatas", "documents"]
+                )
+                logger.info(f"Retrieved {len(results.get('ids', []))} total memories from database")
+            except Exception as get_error:
+                logger.error(f"Error getting documents from collection: {str(get_error)}")
+                logger.error(traceback.format_exc())
+                return []
 
             memories = []
-            if results["ids"]:
-                # Normalize search tags once
-                search_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+            if results.get("ids"):
+                matches_found = 0
+                total_checked = 0
                 
                 for i, doc in enumerate(results["documents"]):
+                    total_checked += 1
                     memory_meta = results["metadatas"][i]
                     
                     # Use enhanced tag parsing that handles both formats
-                    stored_tags = self._parse_tags_fast(memory_meta.get("tags", ""))
+                    try:
+                        stored_tags = self._parse_tags_fast(memory_meta.get("tags", ""))
+                        logger.info(f"Memory {i}: stored_tags = {stored_tags}, search_tags = {search_tags}")
+                    except Exception as parse_error:
+                        logger.warning(f"Error parsing tags for memory {i}: {str(parse_error)}")
+                        stored_tags = []
                     
-                    # Fast tag matching
-                    if any(search_tag in stored_tags for search_tag in search_tags):
+                    # Enhanced tag matching with debugging
+                    tag_matches = [search_tag for search_tag in search_tags if search_tag in stored_tags]
+                    if tag_matches:
+                        matches_found += 1
+                        logger.info(f"Memory {i} matched with tags: {tag_matches}")
+                        
                         # Use stored timestamps or fall back to legacy timestamp field
                         created_at = memory_meta.get("created_at") or memory_meta.get("timestamp_float") or memory_meta.get("timestamp")
                         created_at_iso = memory_meta.get("created_at_iso") or memory_meta.get("timestamp_str")
                         updated_at = memory_meta.get("updated_at") or created_at
                         updated_at_iso = memory_meta.get("updated_at_iso") or created_at_iso
                         
-                        memory = Memory(
-                            content=doc,
-                            content_hash=memory_meta["content_hash"],
-                            tags=stored_tags,
-                            memory_type=memory_meta.get("type"),
-                            # Restore timestamps with fallback logic
-                            created_at=created_at,
-                            created_at_iso=created_at_iso,
-                            updated_at=updated_at,
-                            updated_at_iso=updated_at_iso,
-                            # Include additional metadata
-                            metadata={k: v for k, v in memory_meta.items() 
-                                     if k not in ["content_hash", "tags", "type", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
-                        )
-                        memories.append(memory)
+                        try:
+                            memory = Memory(
+                                content=doc,
+                                content_hash=memory_meta["content_hash"],
+                                tags=stored_tags,
+                                memory_type=memory_meta.get("type"),
+                                # Restore timestamps with fallback logic
+                                created_at=created_at,
+                                created_at_iso=created_at_iso,
+                                updated_at=updated_at,
+                                updated_at_iso=updated_at_iso,
+                                # Include additional metadata
+                                metadata={k: v for k, v in memory_meta.items() 
+                                         if k not in ["content_hash", "tags", "type", "created_at", "created_at_iso", "updated_at", "updated_at_iso", "timestamp", "timestamp_float", "timestamp_str"]}
+                            )
+                            memories.append(memory)
+                        except Exception as memory_error:
+                            logger.error(f"Error creating Memory object for index {i}: {str(memory_error)}")
+                            continue
+                
+                logger.info(f"search_by_tag: checked {total_checked} memories, found {matches_found} matches, returning {len(memories)} valid memories")
+            else:
+                logger.warning("search_by_tag: No memories found in database")
             
             return memories
             
@@ -999,19 +1059,28 @@ class ChromaMemoryStorage(MemoryStorage):
         """Fast tag parsing from comma-separated string or JSON array.
         
         Provides backward compatibility with both storage formats.
+        Enhanced with debugging for troubleshooting.
         """
         if not tag_string:
+            logger.info("_parse_tags_fast: received empty tag_string")
             return []
+        
+        logger.info(f"_parse_tags_fast: parsing tag_string = '{tag_string}'")
             
         # Try to parse as JSON first (old format)
         if tag_string.startswith("[") and tag_string.endswith("]"):
             try:
-                return json.loads(tag_string)
-            except json.JSONDecodeError:
+                parsed_json = json.loads(tag_string)
+                logger.info(f"_parse_tags_fast: successfully parsed JSON format: {parsed_json}")
+                return parsed_json
+            except json.JSONDecodeError as e:
+                logger.info(f"_parse_tags_fast: JSON parsing failed: {str(e)}, falling back to comma-separated")
                 pass
                 
         # If not JSON or parsing fails, treat as comma-separated (new format)
-        return [tag.strip() for tag in tag_string.split(",") if tag.strip()]
+        parsed_csv = [tag.strip() for tag in tag_string.split(",") if tag.strip()]
+        logger.info(f"_parse_tags_fast: parsed as comma-separated: {parsed_csv}")
+        return parsed_csv
 
     async def retrieve(self, query: str, n_results: int = 5) -> List[MemoryQueryResult]:
         """Retrieve memories using semantic search with performance optimizations."""
